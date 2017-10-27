@@ -71,7 +71,7 @@
   }
   NSRange range = NSMakeRange(offset, size);
   [data_ getBytes:buffer range:range];
-  return size;
+  return (int)size;
 }
 
 @end
@@ -95,12 +95,12 @@
   // and then replace whatever bytes they want to write.
   NSMutableData* data = (NSMutableData*)[self data];
   if ([data length] < (offset + size)) {
-    int bytesBeyond = (offset + size) - [data length];
+    int bytesBeyond = (int)((offset + size) - [data length]);
     [(NSMutableData *)data increaseLengthBy:bytesBeyond];
   }
   NSRange range = NSMakeRange(offset, size);
   [data replaceBytesInRange:range withBytes:buffer];
-  return size;
+  return (int)size;
 }
 
 - (BOOL)truncateToOffset:(off_t)offset 

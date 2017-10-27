@@ -209,7 +209,10 @@ typedef enum {
   
   // Check for deprecated methods.
   SEL deprecatedMethods[] = {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wundeclared-selector"
     @selector(createFileAtPath:attributes:userData:error:)
+#pragma clang diagnostic pop
   };
   for (int i = 0; i < sizeof(deprecatedMethods) / sizeof(SEL); ++i) {
     SEL sel = deprecatedMethods[i];
@@ -740,8 +743,8 @@ static const int kWaitForMountUSleepInterval = 100000;  // 100 ms
   // user and group IDs for the current process are used as defaults.
   NSNumber* uid = [attributes objectForKey:NSFileOwnerAccountID];
   NSNumber* gid = [attributes objectForKey:NSFileGroupOwnerAccountID];
-  stbuf->st_uid = uid ? [uid longValue] : geteuid();
-  stbuf->st_gid = gid ? [gid longValue] : getegid();
+  stbuf->st_uid = uid ? (uid_t)[uid longValue] : geteuid();
+  stbuf->st_gid = gid ? (uid_t)[gid longValue] : getegid();
 
   // nlink
   NSNumber* nlink = [attributes objectForKey:NSFileReferenceCount];
@@ -750,7 +753,7 @@ static const int kWaitForMountUSleepInterval = 100000;  // 100 ms
   // flags
   NSNumber* flags = [attributes objectForKey:kGMUserFileSystemFileFlagsKey];
   if (flags) {
-    stbuf->st_flags = [flags longValue];
+    stbuf->st_flags = (uint32_t)[flags longValue];
   } else {
     // Just in case they tried to use NSFileImmutable or NSFileAppendOnly
     NSNumber* immutableFlag = [attributes objectForKey:NSFileImmutable];
@@ -1535,7 +1538,7 @@ static const int kWaitForMountUSleepInterval = 100000;  // 100 ms
 #define MAYBE_USE_ERROR(var, error)                                       \
   if ((error) != nil &&                                                   \
       [[(error) domain] isEqualToString:NSPOSIXErrorDomain]) {            \
-    int code = [(error) code];                                            \
+    int code = (int)[(error) code];                                            \
     if (code != 0) {                                                      \
       (var) = -code;                                                      \
     }                                                                     \
@@ -1590,7 +1593,7 @@ static int fusefm_mkdir(const char* path, mode_t mode) {
       ret = 0;  // Success!
     } else {
       if (error != nil) {
-        ret = -[error code];
+        ret = -(int)[error code];
       }
     }
   }
@@ -1765,7 +1768,7 @@ static int fusefm_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
       ret = 0;
       filler(buf, ".", NULL, 0);
       filler(buf, "..", NULL, 0);
-      for (int i = 0, count = [contents count]; i < count; i++) {
+      for (int i = 0, count = (int)[contents count]; i < count; i++) {
         filler(buf, [[contents objectAtIndex:i] UTF8String], NULL, 0);
       }
     } else {
@@ -2113,11 +2116,11 @@ static int fusefm_listxattr(const char *path, char *list, size_t size)
     if (attributeNames != nil) {
       char zero = 0;
       NSMutableData* data = [NSMutableData dataWithCapacity:size];  
-      for (int i = 0, count = [attributeNames count]; i < count; i++) {
+      for (int i = 0, count = (int)[attributeNames count]; i < count; i++) {
         [data appendData:[[attributeNames objectAtIndex:i] dataUsingEncoding:NSUTF8StringEncoding]];
         [data appendBytes:&zero length:1];
       }
-      ret = [data length];  // default to returning size of buffer.
+      ret = (int)[data length];  // default to returning size of buffer.
       if (list) {
         if (size > [data length]) {
           size = [data length];
@@ -2146,13 +2149,13 @@ static int fusefm_getxattr(const char *path, const char *name, char *value,
                                        position:position
                                           error:&error];
     if (data != nil) {
-      ret = [data length];  // default to returning size of buffer.
+      ret = (int)[data length];  // default to returning size of buffer.
       if (value) {
         if (size > [data length]) {
           size = [data length];
         }
         [data getBytes:value length:size];
-        ret = size;  // bytes read
+        ret = (int)size;  // bytes read
       }
     } else {
       MAYBE_USE_ERROR(ret, error);
@@ -2382,9 +2385,9 @@ static struct fuse_operations fusefm_oper = {
   [args release];  // We don't need packaged up args any more.
 
   // Start Fuse Main
-  int argc = [arguments count];
+  int argc = (int)[arguments count];
   const char* argv[argc];
-  for (int i = 0, count = [arguments count]; i < count; i++) {
+  for (int i = 0, count = (int)[arguments count]; i < count; i++) {
     NSString* argument = [arguments objectAtIndex:i];
     argv[i] = strdup([argument UTF8String]);  // We'll just leak this for now.
   }
