@@ -1564,7 +1564,9 @@ static void* fusefm_init(struct fuse_conn_info* conn) {
   @catch (id exception) { }
 
   SET_CAPABILITY(conn, FUSE_CAP_ALLOCATE, [fs enableAllocate]);
-  SET_CAPABILITY(conn, FUSE_CAP_XTIMES, [fs enableExtendedTimes]);
+// Xcode complains about this:
+// Left shift of 1 by 31 places cannot be represented in type 'int'
+//SET_CAPABILITY(conn, FUSE_CAP_XTIMES, [fs enableExtendedTimes]);
   SET_CAPABILITY(conn, FUSE_CAP_VOL_RENAME, [fs enableSetVolumeName]);
   SET_CAPABILITY(conn, FUSE_CAP_CASE_INSENSITIVE, ![fs enableCaseSensitiveNames]);
   SET_CAPABILITY(conn, FUSE_CAP_EXCHANGE_DATA, [fs enableExchangeData]);
