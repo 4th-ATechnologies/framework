@@ -41,6 +41,8 @@
 #import "GMUserFileSystem.h"
 
 #define FUSE_USE_VERSION 26
+#define SUPPORT_VBFS    1       // very big file systems
+
 #include <fuse.h>
 #include <fuse/fuse_lowlevel.h>
 
@@ -154,6 +156,19 @@ typedef enum {
 - (void)setDelegate:(id)delegate;
 @end
 
+
+// Deprecated delegate methods that we still support for backward compatibility
+// with previously compiled file systems. This will be actively trimmed as
+// new releases occur.
+@interface NSObject (GMUserFileSystemDeprecated)
+
+- (BOOL)createFileAtPath:(NSString *)path
+              attributes:(NSDictionary *)attributes
+                userData:(id *)userData
+                   error:(NSError **)error;
+
+@end
+
 @implementation GMUserFileSystemInternal
 
 - (id)init {
@@ -225,18 +240,6 @@ typedef enum {
 
 @end
 
-// Deprecated delegate methods that we still support for backward compatibility
-// with previously compiled file systems. This will be actively trimmed as
-// new releases occur.
-@interface NSObject (GMUserFileSystemDeprecated)
-
-- (BOOL)createFileAtPath:(NSString *)path
-              attributes:(NSDictionary *)attributes
-                userData:(id *)userData
-                   error:(NSError **)error;
-
-@end
-
 @interface GMUserFileSystem (GMUserFileSystemPrivate)
 
 // The file system for the current thread. Valid only during a FUSE callback.
@@ -265,9 +268,15 @@ typedef enum {
                forPath:(NSString *)path
               userData:(id)userData
                  error:(NSError **)error;
+#if SUPPORT_VBFS
 - (BOOL)fillStatfsBuffer:(struct statfs *)stbuf
                  forPath:(NSString *)path
                    error:(NSError **)error;
+#else
+- (BOOL)fillStatvfsBuffer:(struct statvfs *)stbuf
+                  forPath:(NSString *)path
+                    error:(NSError **)error;
+#endif
 
 - (void)fuseInit;
 - (void)fuseDestroy;
@@ -677,6 +686,8 @@ static const int kWaitForMountUSleepInterval = 100000;  // 100 ms
 
 #pragma mark Internal Stat Operations
 
+#if SUPPORT_VBFS
+
 - (BOOL)fillStatfsBuffer:(struct statfs *)stbuf
                  forPath:(NSString *)path
                    error:(NSError **)error {
@@ -684,36 +695,81 @@ static const int kWaitForMountUSleepInterval = 100000;  // 100 ms
   if (!attributes) {
     return NO;
   }
-  
+
   // Block size
   NSNumber* blocksize = [attributes objectForKey:kGMUserFileSystemVolumeFileSystemBlockSizeKey];
   assert(blocksize);
   stbuf->f_bsize = (uint32_t)[blocksize unsignedIntValue];
   stbuf->f_iosize = (int32_t)[blocksize intValue];
-  
+
   // Size in blocks
   NSNumber* size = [attributes objectForKey:NSFileSystemSize];
   assert(size);
   stbuf->f_blocks = (uint64_t)([size unsignedLongLongValue] / stbuf->f_bsize);
-  
+
   // Number of free / available blocks
   NSNumber* freeSize = [attributes objectForKey:NSFileSystemFreeSize];
   assert(freeSize);
   stbuf->f_bavail = stbuf->f_bfree =
-    (uint64_t)([freeSize unsignedLongLongValue] / stbuf->f_bsize);
-  
+  (uint64_t)([freeSize unsignedLongLongValue] / stbuf->f_bsize);
+
   // Number of nodes
   NSNumber* numNodes = [attributes objectForKey:NSFileSystemNodes];
   assert(numNodes);
   stbuf->f_files = (uint64_t)[numNodes unsignedLongLongValue];
-  
+
   // Number of free / available nodes
   NSNumber* freeNodes = [attributes objectForKey:NSFileSystemFreeNodes];
   assert(freeNodes);
   stbuf->f_ffree = (uint64_t)[freeNodes unsignedLongLongValue];
-  
+
   return YES;
 }
+#else
+
+- (BOOL)fillStatvfsBuffer:(struct statvfs *)stbuf
+                  forPath:(NSString *)path
+                    error:(NSError **)error {
+  NSDictionary* attributes = [self attributesOfFileSystemForPath:path error:error];
+  if (!attributes) {
+    return NO;
+  }
+
+  // Maximum length of filenames
+  NSNumber* namemax = [attributes objectForKey:kGMUserFileSystemVolumeMaxFilenameLengthKey];
+  assert(namemax);
+  stbuf->f_namemax = [namemax unsignedLongValue];
+
+  // Block size
+  NSNumber* blocksize = [attributes objectForKey:kGMUserFileSystemVolumeFileSystemBlockSizeKey];
+  assert(blocksize);
+  stbuf->f_bsize = stbuf->f_frsize = [blocksize unsignedLongValue];
+
+  // Size in blocks
+  NSNumber* size = [attributes objectForKey:NSFileSystemSize];
+  assert(size);
+  stbuf->f_blocks = (fsblkcnt_t)([size longLongValue] / stbuf->f_frsize);
+
+  // Number of free / available blocks
+  NSNumber* freeSize = [attributes objectForKey:NSFileSystemFreeSize];
+  assert(freeSize);
+  stbuf->f_bfree = stbuf->f_bavail =
+  (fsblkcnt_t)([freeSize longLongValue] / stbuf->f_frsize);
+
+  // Number of nodes
+  NSNumber* numNodes = [attributes objectForKey:NSFileSystemNodes];
+  assert(numNodes);
+  stbuf->f_files = (fsfilcnt_t)[numNodes longLongValue];
+
+  // Number of free / available nodes
+  NSNumber* freeNodes = [attributes objectForKey:NSFileSystemFreeNodes];
+  assert(freeNodes);
+  stbuf->f_ffree = stbuf->f_favail = (fsfilcnt_t)[freeNodes longLongValue];
+
+  return YES;
+}
+
+#endif
 
 - (BOOL)fillStatBuffer:(struct stat *)stbuf 
                forPath:(NSString *)path 
@@ -752,8 +808,8 @@ static const int kWaitForMountUSleepInterval = 100000;  // 100 ms
   // user and group IDs for the current process are used as defaults.
   NSNumber* uid = [attributes objectForKey:NSFileOwnerAccountID];
   NSNumber* gid = [attributes objectForKey:NSFileGroupOwnerAccountID];
-  stbuf->st_uid = uid ? [uid longValue] : geteuid();
-  stbuf->st_gid = gid ? [gid longValue] : getegid();
+  stbuf->st_uid = uid ? (uid_t)[uid longValue] : geteuid();
+  stbuf->st_gid = gid ? (uid_t)[gid longValue] : getegid();
 
   // nlink
   NSNumber* nlink = [attributes objectForKey:NSFileReferenceCount];
@@ -762,7 +818,7 @@ static const int kWaitForMountUSleepInterval = 100000;  // 100 ms
   // flags
   NSNumber* flags = [attributes objectForKey:kGMUserFileSystemFileFlagsKey];
   if (flags) {
-    stbuf->st_flags = [flags longValue];
+    stbuf->st_flags = (uint32_t)[flags longValue];
   } else {
     // Just in case they tried to use NSFileImmutable or NSFileAppendOnly
     NSNumber* immutableFlag = [attributes objectForKey:NSFileImmutable];
@@ -1547,7 +1603,7 @@ static const int kWaitForMountUSleepInterval = 100000;  // 100 ms
 #define MAYBE_USE_ERROR(var, error)                                       \
   if ((error) != nil &&                                                   \
       [[(error) domain] isEqualToString:NSPOSIXErrorDomain]) {            \
-    int code = [(error) code];                                            \
+    int code = (int)[(error) code];                                            \
     if (code != 0) {                                                      \
       (var) = -code;                                                      \
     }                                                                     \
@@ -1564,9 +1620,7 @@ static void* fusefm_init(struct fuse_conn_info* conn) {
   @catch (id exception) { }
 
   SET_CAPABILITY(conn, FUSE_CAP_ALLOCATE, [fs enableAllocate]);
-// Xcode complains about this:
-// Left shift of 1 by 31 places cannot be represented in type 'int'
-//SET_CAPABILITY(conn, FUSE_CAP_XTIMES, [fs enableExtendedTimes]);
+  SET_CAPABILITY(conn, FUSE_CAP_XTIMES, [fs enableExtendedTimes]);
   SET_CAPABILITY(conn, FUSE_CAP_VOL_RENAME, [fs enableSetVolumeName]);
   SET_CAPABILITY(conn, FUSE_CAP_CASE_INSENSITIVE, ![fs enableCaseSensitiveNames]);
   SET_CAPABILITY(conn, FUSE_CAP_EXCHANGE_DATA, [fs enableExchangeData]);
@@ -1604,7 +1658,7 @@ static int fusefm_mkdir(const char* path, mode_t mode) {
       ret = 0;  // Success!
     } else {
       if (error != nil) {
-        ret = -[error code];
+        ret = -(int)[error code];
       }
     }
   }
@@ -1779,7 +1833,7 @@ static int fusefm_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
       ret = 0;
       filler(buf, ".", NULL, 0);
       filler(buf, "..", NULL, 0);
-      for (int i = 0, count = [contents count]; i < count; i++) {
+      for (int i = 0, count = (int)[contents count]; i < count; i++) {
         filler(buf, [[contents objectAtIndex:i] UTF8String], NULL, 0);
       }
     } else {
@@ -1923,6 +1977,8 @@ static int fusefm_exchange(const char* p1, const char* p2, unsigned long opts) {
   return ret;  
 }
 
+#if SUPPORT_VBFS
+
 static int fusefm_statfs_x(const char* path, struct statfs* stbuf) {
   NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
   int ret = -ENOENT;
@@ -1942,6 +1998,30 @@ static int fusefm_statfs_x(const char* path, struct statfs* stbuf) {
   [pool release];
   return ret;
 }
+
+#else
+
+static int fusefm_statfs(const char* path, struct statvfs* stbuf) {
+  NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
+  int ret = -ENOENT;
+  @try {
+    memset(stbuf, 0, sizeof(struct statvfs));
+    NSError* error = nil;
+    GMUserFileSystem* fs = [GMUserFileSystem currentFS];
+    if ([fs fillStatvfsBuffer:stbuf
+                      forPath:[NSString stringWithUTF8String:path]
+                        error:&error]) {
+      ret = 0;
+    } else {
+      MAYBE_USE_ERROR(ret, error);
+    }
+  }
+  @catch (id exception) { }
+  [pool release];
+  return ret;
+}
+
+#endif
 
 static int fusefm_setvolname(const char* name) {
   NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
@@ -2127,11 +2207,11 @@ static int fusefm_listxattr(const char *path, char *list, size_t size)
     if (attributeNames != nil) {
       char zero = 0;
       NSMutableData* data = [NSMutableData dataWithCapacity:size];  
-      for (int i = 0, count = [attributeNames count]; i < count; i++) {
+      for (int i = 0, count = (int)[attributeNames count]; i < count; i++) {
         [data appendData:[[attributeNames objectAtIndex:i] dataUsingEncoding:NSUTF8StringEncoding]];
         [data appendBytes:&zero length:1];
       }
-      ret = [data length];  // default to returning size of buffer.
+      ret = (int)[data length];  // default to returning size of buffer.
       if (list) {
         if (size > [data length]) {
           size = [data length];
@@ -2160,13 +2240,13 @@ static int fusefm_getxattr(const char *path, const char *name, char *value,
                                        position:position
                                           error:&error];
     if (data != nil) {
-      ret = [data length];  // default to returning size of buffer.
+      ret = (int)[data length];  // default to returning size of buffer.
       if (value) {
         if (size > [data length]) {
           size = [data length];
         }
         [data getBytes:value length:size];
-        ret = size;  // bytes read
+        ret = (int)size;  // bytes read
       }
     } else {
       MAYBE_USE_ERROR(ret, error);
@@ -2256,7 +2336,11 @@ static struct fuse_operations fusefm_oper = {
   .exchange = fusefm_exchange,
   
   // Getting and Setting Attributes
+#if SUPPORT_VBFS
   .statfs_x = fusefm_statfs_x,
+#else
+  .statfs = fusefm_statfs,
+#endif
   .setvolname = fusefm_setvolname,
   .getattr = fusefm_getattr,
   .fgetattr = fusefm_fgetattr,
@@ -2396,9 +2480,9 @@ static struct fuse_operations fusefm_oper = {
   [args release];  // We don't need packaged up args any more.
 
   // Start Fuse Main
-  int argc = [arguments count];
+  int argc = (int)[arguments count];
   const char* argv[argc];
-  for (int i = 0, count = [arguments count]; i < count; i++) {
+  for (int i = 0, count = (int)[arguments count]; i < count; i++) {
     NSString* argument = [arguments objectAtIndex:i];
     argv[i] = strdup([argument UTF8String]);  // We'll just leak this for now.
   }
